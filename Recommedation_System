@@ -1,0 +1,120 @@
+import json
+import csv
+import pandas as pd
+from py2neo import Graph
+import pandas as pd
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+import random as rd
+#%%
+# Establish a connection to the Neo4j database
+graph = Graph("bolt://localhost:7687", auth=("user_name", "user_password"))
+# Generate random integers for graph names
+rd_int1 = rd.randint(1,500)
+rd_int2 = rd.randint(500,9999)
+# Create graph names
+graph1 = 'g' + str(rd_int1)
+graph2 = 'g' + str(rd_int2)
+#%%
+# Read data from a CSV file
+df = pd.read_csv('title_list.csv')
+print(df)
+#%%
+# Prompt the user for input
+title = str(input("input Title : "))
+index = str(input("input Index : "))
+print(title)
+print(index)
+#%%
+# Construct and execute a Cypher query to project a subgraph from graph1
+query1 = f'''CALL gds.graph.project.cypher('{graph1}','MATCH (n1:Index{{name:"{index}"}})--(n2:Content)--(n3:Category)--(n4:Content{{Title:"{title}"}}) RETURN id(n4) AS id',
+  'MATCH (n4)-[r:Relate]-(n5:Content{{Title:"{title}"}}) RETURN id(n4) AS source, id(n5) AS target, type(r) AS type, count(r) AS numberOfReads',
+  {{ validateRelationships: false }}
+)
+YIELD graphName AS graph, nodeCount AS nodes, relationshipCount AS rels;'''
+result = graph.run(query1).data()
+print(result)
+#%%
+# Construct and execute a Cypher query to project a subgraph from graph2
+query2 = f'''MATCH (source)
+WHERE source:Content
+OPTIONAL MATCH (source:Content{{Title:"{title}"}})-[r:Include]->(target)
+WHERE target:Index WITH gds.alpha.graph.project(
+  '{graph2}',
+  source,
+  target,
+  {{
+    sourceNodeLabels: labels(source),
+    targetNodeLabels: labels(target)
+  }},
+  {{
+    relationshipType: type(r)
+  }}
+) AS g
+RETURN g.graphName AS graph, g.nodeCount AS nodes, g.relationshipCount AS rels'''
+result = graph.run(query2).data()
+print(result)
+#%%
+# Execute PageRank algorithm on graph1
+query3 = f'''CALL gds.pageRank.write('{graph1}',
+{{maxIterations: 100, dampingFactor: 0.85, writeProperty: '{graph1}'}})
+YIELD nodePropertiesWritten, ranIterations'''
+result = graph.run(query3).data()
+print(result)
+#%%
+# Execute Louvain algorithm on graph2
+query4 = f'''call gds.louvain.write('{graph2}',{{writeProperty: '{graph2}'}})'''
+result = graph.run(query4).data()
+print(result)
+#%%
+# Retrieve nodes from the graph based on the query
+query = f'''MATCH (n1:Index{{name:"{index}"}})--(n2:Content)--(n3:Category)--(n4:Content{{Title:"{title}"}})
+return n4'''
+result = graph.run(query).data()
+
+
+unique_nodes = list({node['n4']['Content']: node for node in result}.values())
+
+print(unique_nodes)
+
+# Get unique nodes based on their content property
+louvain_list = []
+
+for node in result:
+    if node['n4'].get(f'{graph2}', 0) != 0:
+        louvain_list.append(node['n4'][f'{graph2}'])
+
+louvain_list = list(set(louvain_list))
+print(louvain_list)
+
+#%%
+# Print nodes grouped by Louvain values
+for i in louvain_list:
+    group_0 = [node for node in result if node['n4'][f'{graph2}'] == i]
+    group_0_sorted = sorted(group_0, key=lambda node: node['n4'].get(f'{graph1}', 0), reverse=True)
+    unique_nodes = set()
+    for node in group_0_sorted:
+        if node['n4'].get(f'{graph2}') is not None and node['n4'][f'{graph2}'] >= 0.9:
+            unique_nodes.add(node['n4']['Content'])
+    iteration = 0
+    for node in unique_nodes:
+        iteration += 1
+        if iteration >= 2:
+            print(node)
+    print('--------------------------------')
+
+#%%
+# Remove graph properties from the nodes
+query1 = f'''MATCH (n:content) REMOVE n.{graph1}'''
+query2 = f'''MATCH (n:content) REMOVE n.{graph2}'''
+
+graph.run(query1)
+graph.run(query2)
+#%%
+# Drop the projected graphs
+query1 = f"CALL gds.graph.drop('{graph1}')"
+query2 = f"CALL gds.graph.drop('{graph2}')"
+result1 = graph.run(query1)
+result2 = graph.run(query2)
+print(result1)
+print(result2)
